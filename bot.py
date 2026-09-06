@@ -37,7 +37,7 @@ def send_quiz(question, options, correct_index):
         "question": question,
         "options": options,
         "type": "quiz",
-        "correct_option_id": correct_index,
+        "correct_option_ids": [correct_index],
         "is_anonymous": True,
         "shuffle_options": True
     }
@@ -48,18 +48,45 @@ def send_quiz(question, options, correct_index):
             json=data,
             timeout=15
         )
-        return response.json()
+        result = response.json()
+        print("sendPoll:", result)
+        return result
     except Exception as e:
         print("sendPoll error:", repr(e))
         return {"ok": False}
 
 
 def parse_questions(text):
-    pattern = r'(?m)^\s*(\d+)[\.\-)]\s*(.*?)\s*\n\s*الف[\)\.\-:]\s*(.*?)\s*\n\s*ب[\)\.\-:]\s*(.*?)\s*\n\s*ج[\)\.\-:]\s*(.*?)\s*\n\s*د[\)\.\-:]\s*(.*?)\s*\n\s*پاسخ\s*[:：]\s*([الفبجد])'
 
-    matches = re.findall(pattern, text, re.S)
+    # شماره سؤال فارسی یا انگلیسی
+    pattern = r'''
+    (?ms)
+    ^\s*
+    ([0-9۰-۹]+)
+    [\.\-)]
+    \s*
+    (.*?)
+    \s*
+    (?:\n|\r\n)
+    \s*
+    الف\s*[\)\.\-:]?\s*(.*?)
+    \s*(?:\n|\r\n)
+    \s*
+    ب\s*[\)\.\-:]?\s*(.*?)
+    \s*(?:\n|\r\n)
+    \s*
+    ج\s*[\)\.\-:]?\s*(.*?)
+    \s*(?:\n|\r\n)
+    \s*
+    د\s*[\)\.\-:]?\s*(.*?)
+    \s*(?:\n|\r\n)
+    \s*
+    (?:پاسخ|جواب)
+    \s*[:：\-]?\s*
+    ([الفبجد])
+    '''
 
-    questions = []
+    matches = re.findall(pattern, text, re.VERBOSE)
 
     letter_to_index = {
         "الف": 0,
@@ -68,25 +95,25 @@ def parse_questions(text):
         "د": 3
     }
 
+    questions = []
+
     for match in matches:
         number, question, a, b, c, d, answer = match
 
-        options = [
-            a.strip(),
-            b.strip(),
-            c.strip(),
-            d.strip()
-        ]
+        answer = answer.strip()
 
-        correct_index = letter_to_index.get(answer.strip())
-
-        if correct_index is None:
+        if answer not in letter_to_index:
             continue
 
         questions.append({
             "question": question.strip(),
-            "options": options,
-            "correct_index": correct_index
+            "options": [
+                a.strip(),
+                b.strip(),
+                c.strip(),
+                d.strip()
+            ],
+            "correct_index": letter_to_index[answer]
         })
 
     return questions
@@ -99,6 +126,7 @@ def home():
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
+
     update = request.get_json(silent=True) or {}
 
     message = update.get("message", {})
@@ -108,48 +136,67 @@ def webhook():
         return "OK"
 
     if text.startswith("/start"):
+
         requests.post(
             f"{API}/sendMessage",
             json={
                 "chat_id": message["chat"]["id"],
-                "text": "سلام 🌷\nسؤالات تستی را با گزینه‌های الف، ب، ج، د و پاسخ صحیح برایم بفرست."
+                "text": (
+                    "سلام 🌷\n"
+                    "سؤالات تستی را با گزینه‌های الف، ب، ج، د "
+                    "و جواب صحیح بفرست."
+                )
             },
             timeout=15
         )
 
-    else:
-        questions = parse_questions(text)
+        return "OK"
 
-        if not questions:
-            requests.post(
-                f"{API}/sendMessage",
-                json={
-                    "chat_id": message["chat"]["id"],
-                    "text": "❌ فرمت سؤال قابل تشخیص نبود.\n\nپایان هر سؤال بنویس:\nپاسخ: ب"
-                },
-                timeout=15
-            )
-        else:
-            success = 0
+    questions = parse_questions(text)
 
-            for q in questions:
-                result = send_quiz(
-                    q["question"],
-                    q["options"],
-                    q["correct_index"]
+    if not questions:
+
+        requests.post(
+            f"{API}/sendMessage",
+            json={
+                "chat_id": message["chat"]["id"],
+                "text": (
+                    "❌ فرمت سؤال قابل تشخیص نبود.\n\n"
+                    "نمونه:\n"
+                    "۷. متن سؤال\n"
+                    "الف) گزینه اول\n"
+                    "ب) گزینه دوم\n"
+                    "ج) گزینه سوم\n"
+                    "د) گزینه چهارم\n"
+                    "جواب: ب"
                 )
+            },
+            timeout=15
+        )
 
-                if result.get("ok"):
-                    success += 1
+        return "OK"
 
-            requests.post(
-                f"{API}/sendMessage",
-                json={
-                    "chat_id": message["chat"]["id"],
-                    "text": f"✅ {success} تست در کانال منتشر شد."
-                },
-                timeout=15
-            )
+    success = 0
+
+    for q in questions:
+
+        result = send_quiz(
+            q["question"],
+            q["options"],
+            q["correct_index"]
+        )
+
+        if result.get("ok"):
+            success += 1
+
+    requests.post(
+        f"{API}/sendMessage",
+        json={
+            "chat_id": message["chat"]["id"],
+            "text": f"✅ {success} تست در کانال منتشر شد."
+        },
+        timeout=15
+    )
 
     return "OK"
 
