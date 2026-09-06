@@ -1,5 +1,4 @@
 import os
-import random
 import re
 import requests
 from flask import Flask, request
@@ -12,25 +11,46 @@ CHANNEL_ID = os.environ.get("CHANNEL_ID")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 
+def set_webhook():
+    external_url = os.environ.get("RENDER_EXTERNAL_URL")
+
+    if not external_url:
+        print("ERROR: RENDER_EXTERNAL_URL is missing")
+        return
+
+    webhook_url = external_url.rstrip("/") + "/webhook"
+
+    try:
+        result = requests.get(
+            f"{API}/setWebhook",
+            params={"url": webhook_url},
+            timeout=10
+        )
+        print("setWebhook:", result.status_code, result.text)
+    except Exception as e:
+        print("setWebhook error:", repr(e))
+
+
 def send_quiz(question, options, correct_index):
-    random.shuffle(options)
-
-    correct_text = options[correct_index]
-
-    # بعد از جابه‌جایی، جای گزینه درست را پیدا می‌کنیم
-    new_correct_index = options.index(correct_text)
-
     data = {
         "chat_id": CHANNEL_ID,
         "question": question,
         "options": options,
         "type": "quiz",
-        "correct_option_id": new_correct_index,
+        "correct_option_id": correct_index,
         "is_anonymous": True,
         "shuffle_options": True
     }
 
-    return requests.post(f"{API}/sendPoll", json=data).json()
+    try:
+        return requests.post(
+            f"{API}/sendPoll",
+            json=data,
+            timeout=15
+        ).json()
+    except Exception as e:
+        print("sendPoll error:", repr(e))
+        return {"ok": False}
 
 
 def parse_questions(text):
@@ -50,7 +70,7 @@ def parse_questions(text):
             d.strip()
         ]
 
-        # در مجموعه فعلی، پاسخ صحیح «ب» است
+        # پاسخ صحیح در مجموعه فعلی: گزینه «ب»
         correct_index = 1
 
         questions.append({
@@ -83,7 +103,8 @@ def webhook():
             json={
                 "chat_id": message["chat"]["id"],
                 "text": "سلام 🌷\nسؤالات تستی را با گزینه‌های الف، ب، ج، د برایم بفرست."
-            }
+            },
+            timeout=15
         )
 
     else:
@@ -95,7 +116,8 @@ def webhook():
                 json={
                     "chat_id": message["chat"]["id"],
                     "text": "فرمت سؤال‌ها قابل تشخیص نبود."
-                }
+                },
+                timeout=15
             )
         else:
             success = 0
@@ -115,21 +137,16 @@ def webhook():
                 json={
                     "chat_id": message["chat"]["id"],
                     "text": f"✅ {success} تست در کانال منتشر شد."
-                }
+                },
+                timeout=15
             )
 
     return "OK"
 
 
+set_webhook()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-
-    external_url = os.environ.get("RENDER_EXTERNAL_URL")
-
-    if external_url:
-        requests.get(
-            f"{API}/setWebhook",
-            params={"url": external_url + "/webhook"}
-        )
-
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port) 
