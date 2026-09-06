@@ -26,7 +26,7 @@ def set_webhook():
             params={"url": webhook_url},
             timeout=10
         )
-        print("setWebhook:", result.status_code, result.text)
+        print("setWebhook:", result.text)
     except Exception as e:
         print("setWebhook error:", repr(e))
 
@@ -56,63 +56,87 @@ def send_quiz(question, options, correct_index):
         return {"ok": False}
 
 
+def normalize_digits(text):
+    table = str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789")
+    return text.translate(table)
+
+
 def parse_questions(text):
 
-    # شماره سؤال فارسی یا انگلیسی
-    pattern = r'''
-    (?ms)
-    ^\s*
-    ([0-9۰-۹]+)
-    [\.\-)]
-    \s*
-    (.*?)
-    \s*
-    (?:\n|\r\n)
-    \s*
-    الف\s*[\)\.\-:]?\s*(.*?)
-    \s*(?:\n|\r\n)
-    \s*
-    ب\s*[\)\.\-:]?\s*(.*?)
-    \s*(?:\n|\r\n)
-    \s*
-    ج\s*[\)\.\-:]?\s*(.*?)
-    \s*(?:\n|\r\n)
-    \s*
-    د\s*[\)\.\-:]?\s*(.*?)
-    \s*(?:\n|\r\n)
-    \s*
-    (?:پاسخ|جواب)
-    \s*[:：\-]?\s*
-    ([الفبجد])
-    '''
+    text = text.replace("\u200c", "")
+    text = text.replace("\r", "\n")
 
-    matches = re.findall(pattern, text, re.VERBOSE)
+    # پیدا کردن شروع سؤال‌ها؛ چه در خط جدید باشند چه پشت سر هم
+    start_pattern = r'(?<!\d)([0-9۰-۹]+)\s*[\.\)]\s*'
 
-    letter_to_index = {
-        "الف": 0,
-        "ب": 1,
-        "ج": 2,
-        "د": 3
-    }
+    starts = list(re.finditer(start_pattern, text))
 
     questions = []
 
-    for match in matches:
-        number, question, a, b, c, d, answer = match
+    for i, start in enumerate(starts):
 
-        answer = answer.strip()
+        # متن این سؤال تا شروع سؤال بعدی
+        end = starts[i + 1].start() if i + 1 < len(starts) else len(text)
+        block = text[start.end():end].strip()
+
+        # پیدا کردن جواب
+        answer_match = re.search(
+            r'(?:پاسخ|جواب)\s*[:：\-]?\s*([الفبجد])',
+            block,
+            re.IGNORECASE
+        )
+
+        if not answer_match:
+            continue
+
+        answer = answer_match.group(1).strip()
+
+        letter_to_index = {
+            "الف": 0,
+            "ب": 1,
+            "ج": 2,
+            "د": 3
+        }
 
         if answer not in letter_to_index:
             continue
 
+        # قسمت سؤال و گزینه‌ها
+        content = block[:answer_match.start()].strip()
+
+        # پیدا کردن محل گزینه‌های الف، ب، ج، د
+        option_pattern = r'(?:^|\s)(الف|ب|ج|د)\s*[\)\.\-:]?\s*'
+
+        option_matches = list(re.finditer(option_pattern, content))
+
+        if len(option_matches) < 4:
+            continue
+
+        # متن سؤال
+        question = content[:option_matches[0].start()].strip()
+
+        # گزینه‌ها
+        options = []
+
+        for j in range(4):
+            option_start = option_matches[j].end()
+
+            if j + 1 < 4:
+                option_end = option_matches[j + 1].start()
+            else:
+                option_end = len(content)
+
+            option_text = content[option_start:option_end].strip()
+
+            if option_text:
+                options.append(option_text)
+
+        if len(options) != 4:
+            continue
+
         questions.append({
-            "question": question.strip(),
-            "options": [
-                a.strip(),
-                b.strip(),
-                c.strip(),
-                d.strip()
-            ],
+            "question": question,
+            "options": options,
             "correct_index": letter_to_index[answer]
         })
 
@@ -161,14 +185,8 @@ def webhook():
             json={
                 "chat_id": message["chat"]["id"],
                 "text": (
-                    "❌ فرمت سؤال قابل تشخیص نبود.\n\n"
-                    "نمونه:\n"
-                    "۷. متن سؤال\n"
-                    "الف) گزینه اول\n"
-                    "ب) گزینه دوم\n"
-                    "ج) گزینه سوم\n"
-                    "د) گزینه چهارم\n"
-                    "جواب: ب"
+                    "❌ سؤال قابل تشخیص نبود.\n"
+                    "فرمت باید شامل چهار گزینه و «جواب: ...» باشد."
                 )
             },
             timeout=15
@@ -193,7 +211,7 @@ def webhook():
         f"{API}/sendMessage",
         json={
             "chat_id": message["chat"]["id"],
-            "text": f"✅ {success} تست در کانال منتشر شد."
+            "text": f"✅ {success} تست از {len(questions)} تست در کانال منتشر شد."
         },
         timeout=15
     )
@@ -206,4 +224,4 @@ set_webhook()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port) 
