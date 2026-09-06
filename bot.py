@@ -11,6 +11,7 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
+
 LETTER_MAP = {
     "الف": 0,
     "ب": 1,
@@ -23,9 +24,20 @@ def normalize_text(text):
     if not text:
         return ""
 
-    # حذف کاراکترهای نامرئی و نیم‌فاصله
-    for ch in ["\u200c", "\u200d", "\ufeff", "\u2060"]:
+    # نیم‌فاصله فارسی (\u200c) را حذف نمی‌کنیم
+    # تا کلماتی مثل رگه‌ای، توده‌های، زین‌اسبی درست بمانند.
+
+    # فقط کاراکترهای نامرئی مزاحم را حذف می‌کنیم
+    for ch in ["\u200d", "\ufeff", "\u2060"]:
         text = text.replace(ch, "")
+
+    # اگر «جواب‌‌:» یا «پاسخ‌‌:» باشد،
+    # نیم‌فاصله‌های بعد از کلمه جواب/پاسخ را فقط همان‌جا حذف می‌کنیم.
+    text = re.sub(
+        r"(جواب|پاسخ)\u200c+",
+        r"\1",
+        text
+    )
 
     text = text.replace("\r\n", "\n")
     text = text.replace("\r", "\n")
@@ -35,6 +47,7 @@ def normalize_text(text):
         "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩",
         "01234567890123456789"
     )
+
     text = text.translate(trans)
 
     # یکسان‌سازی دونقطه
@@ -48,7 +61,7 @@ def parse_one_question(block):
 
     # پیدا کردن جواب
     answer_match = re.search(
-        r"(?:جواب|پاسخ)\s*[:\-]?\s*(الف|ب|ج|د)\b",
+        r"(?:جواب|پاسخ)\s*[:\-]?\s*(الف|ب|ج|د)(?=\s|$)",
         block
     )
 
@@ -59,10 +72,12 @@ def parse_one_question(block):
     answer_letter = answer_match.group(1)
     correct_index = LETTER_MAP[answer_letter]
 
-    # حذف قسمت جواب از متن
+    # حذف قسمت جواب
     content = block[:answer_match.start()].strip()
 
     # پیدا کردن گزینه‌ها
+    # حتی اگر بین پایان یک گزینه و گزینه بعدی فاصله نباشد،
+    # مثل «۱ بعدب) ...» هم تشخیص داده می‌شود.
     option_pattern = re.compile(
         r"(الف|ب|ج|د)\s*[\)\.\:\-–—]\s*"
     )
@@ -91,6 +106,7 @@ def parse_one_question(block):
     options = []
 
     for i, match in enumerate(matches):
+
         start = match.end()
 
         if i + 1 < len(matches):
@@ -100,7 +116,7 @@ def parse_one_question(block):
 
         option = content[start:end].strip()
 
-        # جداکننده‌های اضافی را فقط از ابتدا و انتها حذف می‌کنیم
+        # جداکننده‌های اضافی فقط از ابتدا و انتها
         option = re.sub(
             r"^[\s|/\\\-–—]+",
             "",
@@ -143,11 +159,13 @@ def split_questions(text):
         )
     )
 
-    # چند سؤال شماره‌دار
+    # اگر چند سؤال شماره‌دار وجود داشته باشد
     if len(starts) >= 2:
+
         blocks = []
 
         for i, match in enumerate(starts):
+
             start = match.start()
 
             if i + 1 < len(starts):
@@ -167,28 +185,73 @@ def split_questions(text):
 
 
 def parse_questions(text):
+
     text = normalize_text(text)
 
     blocks = split_questions(text)
 
     results = []
 
-    for block in blocks:
-        print("PROCESSING BLOCK:")
+    for number, block in enumerate(blocks, start=1):
+
+        print("===================================")
+        print("PROCESSING QUESTION:", number)
         print(repr(block))
 
         parsed = parse_one_question(block)
 
         if parsed:
+
             print("QUESTION FOUND:", parsed["question"])
             print("OPTIONS:", parsed["options"])
             print("CORRECT:", parsed["correct_index"])
 
+            # ذخیره شماره سؤال
+            parsed["number"] = number
+
             results.append(parsed)
+
+        else:
+            print("QUESTION PARSE FAILED:", number)
 
     print("QUESTIONS FOUND:", len(results))
 
     return results
+
+
+def validate_question(item):
+
+    question = item["question"]
+    options = item["options"]
+
+    # محدودیت سؤال تلگرام
+    if len(question) > 300:
+
+        return False, (
+            f"متن سؤال {len(question)} کاراکتر است "
+            f"(حداکثر 300 کاراکتر)."
+        )
+
+    # بررسی تک‌تک گزینه‌ها
+    for i, option in enumerate(options):
+
+        if len(option) > 100:
+
+            letters = ["الف", "ب", "ج", "د"]
+
+            return False, (
+                f"گزینه {letters[i]} "
+                f"{len(option)} کاراکتر است "
+                f"(حداکثر 100 کاراکتر)."
+            )
+
+        if len(option) == 0:
+
+            return False, (
+                f"گزینه {['الف', 'ب', 'ج', 'د'][i]} خالی است."
+            )
+
+    return True, ""
 
 
 def send_quiz(question, options, correct_index):
@@ -197,8 +260,11 @@ def send_quiz(question, options, correct_index):
 
     data = {
         "chat_id": CHANNEL_ID,
-        "question": question[:300],
+
+        "question": question,
+
         "options": options,
+
         "type": "quiz",
 
         # کانال فقط Poll ناشناس را قبول می‌کند
@@ -206,7 +272,7 @@ def send_quiz(question, options, correct_index):
 
         "allows_multiple_answers": False,
 
-        # گزینه‌ها تصادفی می‌شوند
+        # تصادفی شدن ترتیب گزینه‌ها
         "shuffle_options": True,
 
         # پاسخ صحیح
@@ -253,17 +319,42 @@ def process_text(chat_id, text):
     questions = parse_questions(text)
 
     if not questions:
+
         send_message(
             chat_id,
-            "❌ سؤال قابل تشخیص نبود."
+            "❌ هیچ سؤال قابل تشخیصی پیدا نشد."
         )
+
         return
 
     success = 0
+    skipped = []
 
     for item in questions:
 
+        number = item.get("number", "?")
+
+        print("-----------------------------------")
+        print("CHECKING QUESTION:", number)
+
+        # بررسی محدودیت‌های تلگرام قبل از ارسال
+        valid, reason = validate_question(item)
+
+        if not valid:
+
+            print(
+                f"SKIPPED QUESTION {number}: {reason}"
+            )
+
+            skipped.append(
+                f"تست {number}: {reason}"
+            )
+
+            # این تست رد می‌شود و تست بعدی ادامه پیدا می‌کند
+            continue
+
         try:
+
             response = send_quiz(
                 item["question"],
                 item["options"],
@@ -273,40 +364,94 @@ def process_text(chat_id, text):
             result = response.json()
 
             if result.get("ok"):
+
                 success += 1
+
+                print(
+                    f"QUESTION {number} SENT SUCCESSFULLY"
+                )
+
             else:
-                print("TELEGRAM ERROR:", result)
+
+                description = result.get(
+                    "description",
+                    "خطای نامشخص"
+                )
+
+                print(
+                    f"TELEGRAM ERROR QUESTION {number}:",
+                    result
+                )
+
+                skipped.append(
+                    f"تست {number}: {description}"
+                )
 
         except Exception as e:
-            print("SEND ERROR:", repr(e))
+
+            print(
+                f"SEND ERROR QUESTION {number}:",
+                repr(e)
+            )
+
+            skipped.append(
+                f"تست {number}: خطای داخلی"
+            )
+
+    # گزارش نهایی
+    total = len(questions)
+
+    message = (
+        f"✅ {success} تست از {total} تست ارسال شد."
+    )
+
+    if skipped:
+
+        message += "\n\n⚠️ تست‌های ارسال‌نشده:\n"
+
+        for item in skipped:
+
+            message += f"• {item}\n"
 
     send_message(
         chat_id,
-        f"✅ {success} سؤال از {len(questions)} سؤال ارسال شد."
+        message
     )
 
 
 def set_webhook():
 
     if not RENDER_EXTERNAL_URL:
-        print("RENDER_EXTERNAL_URL پیدا نشد.")
+
+        print(
+            "RENDER_EXTERNAL_URL پیدا نشد."
+        )
+
         return
 
-    webhook_url = f"{RENDER_EXTERNAL_URL}/webhook"
+    webhook_url = (
+        f"{RENDER_EXTERNAL_URL}/webhook"
+    )
 
     url = f"{API_URL}/setWebhook"
 
     response = requests.post(
         url,
-        json={"url": webhook_url},
+        json={
+            "url": webhook_url
+        },
         timeout=30
     )
 
-    print("WEBHOOK:", response.text)
+    print(
+        "WEBHOOK:",
+        response.text
+    )
 
 
 @app.route("/", methods=["GET"])
 def home():
+
     return "Telegram Quiz Bot is running!"
 
 
@@ -315,7 +460,9 @@ def webhook():
 
     try:
 
-        update = request.get_json(silent=True)
+        update = request.get_json(
+            silent=True
+        )
 
         print("UPDATE RECEIVED:")
         print(update)
@@ -328,9 +475,16 @@ def webhook():
         if not message:
             return "OK"
 
-        chat_id = message.get("chat", {}).get("id")
+        chat_id = (
+            message
+            .get("chat", {})
+            .get("id")
+        )
 
-        text = message.get("text", "")
+        text = message.get(
+            "text",
+            ""
+        )
 
         if not text:
             return "OK"
@@ -341,19 +495,26 @@ def webhook():
             send_message(
                 chat_id,
                 "سلام 🌷\n"
-                "سؤالات تستی را با گزینه‌های الف، ب، ج، د برایم بفرست."
+                "سؤالات تستی را با گزینه‌های "
+                "الف، ب، ج، د برایم بفرست."
             )
 
             return "OK"
 
-        # پردازش سؤال
-        process_text(chat_id, text)
+        # پردازش تست‌ها
+        process_text(
+            chat_id,
+            text
+        )
 
         return "OK"
 
     except Exception as e:
 
-        print("WEBHOOK ERROR:", repr(e))
+        print(
+            "WEBHOOK ERROR:",
+            repr(e)
+        )
 
         return "OK"
 
@@ -363,7 +524,10 @@ if __name__ == "__main__":
     set_webhook()
 
     port = int(
-        os.environ.get("PORT", 10000)
+        os.environ.get(
+            "PORT",
+            10000
+        )
     )
 
     app.run(
