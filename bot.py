@@ -43,25 +43,33 @@ def send_quiz(question, options, correct_index):
     }
 
     try:
-        return requests.post(
+        response = requests.post(
             f"{API}/sendPoll",
             json=data,
             timeout=15
-        ).json()
+        )
+        return response.json()
     except Exception as e:
         print("sendPoll error:", repr(e))
         return {"ok": False}
 
 
 def parse_questions(text):
-    pattern = r'(?m)^\s*(\d+)[\.\-)]\s*(.*?)\s*\n\s*الف[\)\.\-:]\s*(.*?)\s*\n\s*ب[\)\.\-:]\s*(.*?)\s*\n\s*ج[\)\.\-:]\s*(.*?)\s*\n\s*د[\)\.\-:]\s*(.*?)(?=\n\s*\d+[\.\-)]|\Z)'
+    pattern = r'(?m)^\s*(\d+)[\.\-)]\s*(.*?)\s*\n\s*الف[\)\.\-:]\s*(.*?)\s*\n\s*ب[\)\.\-:]\s*(.*?)\s*\n\s*ج[\)\.\-:]\s*(.*?)\s*\n\s*د[\)\.\-:]\s*(.*?)\s*\n\s*پاسخ\s*[:：]\s*([الفبجد])'
 
     matches = re.findall(pattern, text, re.S)
 
     questions = []
 
+    letter_to_index = {
+        "الف": 0,
+        "ب": 1,
+        "ج": 2,
+        "د": 3
+    }
+
     for match in matches:
-        number, question, a, b, c, d = match
+        number, question, a, b, c, d, answer = match
 
         options = [
             a.strip(),
@@ -70,8 +78,10 @@ def parse_questions(text):
             d.strip()
         ]
 
-        # پاسخ صحیح در مجموعه فعلی: گزینه «ب»
-        correct_index = 1
+        correct_index = letter_to_index.get(answer.strip())
+
+        if correct_index is None:
+            continue
 
         questions.append({
             "question": question.strip(),
@@ -102,7 +112,7 @@ def webhook():
             f"{API}/sendMessage",
             json={
                 "chat_id": message["chat"]["id"],
-                "text": "سلام 🌷\nسؤالات تستی را با گزینه‌های الف، ب، ج، د برایم بفرست."
+                "text": "سلام 🌷\nسؤالات تستی را با گزینه‌های الف، ب، ج، د و پاسخ صحیح برایم بفرست."
             },
             timeout=15
         )
@@ -115,7 +125,7 @@ def webhook():
                 f"{API}/sendMessage",
                 json={
                     "chat_id": message["chat"]["id"],
-                    "text": "فرمت سؤال‌ها قابل تشخیص نبود."
+                    "text": "❌ فرمت سؤال قابل تشخیص نبود.\n\nپایان هر سؤال بنویس:\nپاسخ: ب"
                 },
                 timeout=15
             )
@@ -149,4 +159,4 @@ set_webhook()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port) 
+    app.run(host="0.0.0.0", port=port)
